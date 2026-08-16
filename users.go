@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -16,6 +17,10 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
 }
+
+const (
+	hourInSeconds int = 60 * 60
+)
 
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
@@ -60,12 +65,14 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 
 func (cfg *apiConfig) HandlerLogin(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		ExpiresInSeconds int    `json:"expires_in_seconds,omitempty"`
 	}
 
 	type response struct {
 		User
+		Token string `json:"token"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -73,6 +80,13 @@ func (cfg *apiConfig) HandlerLogin(w http.ResponseWriter, r *http.Request) {
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters", err)
+	}
+
+	var durationString string
+	if params.ExpiresInSeconds == 0 || params.ExpiresInSeconds > hourInSeconds {
+		durationString = fmt.Sprintf("%ds", hourInSeconds)
+	} else {
+		durationString = fmt.Sprintf("%ds", params.ExpiresInSeconds)
 	}
 
 	user, err := cfg.db.GetUserByEmail(r.Context(), params.Email)
@@ -86,6 +100,16 @@ func (cfg *apiConfig) HandlerLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password", err)
 	}
 
+	duration, err := time.ParseDuration(durationString)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't parse duration", err)
+	}
+
+	jwtToken, err := auth.MakeJWT(user.ID, cfg.jwtSecret, duration)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create JWT", err)
+	}
+
 	respondWithJSON(w, http.StatusOK, response{
 		User: User{
 			ID:        user.ID,
@@ -93,5 +117,6 @@ func (cfg *apiConfig) HandlerLogin(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt: user.UpdatedAt,
 			Email:     user.Email,
 		},
+		Token: jwtToken,
 	})
 }
